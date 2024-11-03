@@ -7,66 +7,101 @@ package ip2country
 import (
 	"bufio"
 	"errors"
+	"math/big"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 )
 
-//ErrInvalidLine when csv line is invalid
-var ErrInvalidLine = errors.New("Invalid line structure")
+// ErrInvalidLine when csv line is invalid
+var ErrInvalidLine = errors.New("invalid line structure")
 
-//ErrInvalidIPv4 when invalid ip address provided
-var ErrInvalidIPv4 = errors.New("Invalid IPv4 address")
+// ErrInvalidIPv4 when invalid ip (v4) address provided
+var ErrInvalidIPv4 = errors.New("invalid IPv4 address")
 
-type ipRange struct {
+// ErrInvalidIPv4 when invalid ip v6 address provided
+var ErrInvalidIPv6 = errors.New("invalid IPv4 address")
+
+// Range for IPv4
+type ip4Range struct {
 	start   uint
 	end     uint
 	country string
 }
 
-var arr []ipRange
-var once sync.Once
-var loadError error
-
-//Load db-ip.com csv file
-//It must be called only once
-func Load(filepath string) error {
-	once.Do(func() {
-		loadError = load(filepath)
-	})
-
-	return loadError
+// Range for v6
+type ip6Range struct {
+	start   *big.Int
+	end     *big.Int
+	country string
 }
 
-//GetCountry returns the country which ip blongs to
-func GetCountry(ip string) string {
+type loadedIPs struct {
+	arrV4 []ip4Range
+	arrV6 []ip6Range
+}
 
-	ipNumb, err := ipToInt(ip)
+// Load db-ip.com csv file.
+// It must be called only once
+//
+// Example usage:
+//
+//	ips, _ := ip2country.Load("db.csv")
+//	fmt.Println(ips.GetCountry("1234::"))
+//	fmt.Println(ips.GetCountry("255.255.255.255"))
+func Load(filepath string) (loaded loadedIPs, err error) {
+	loaded.arrV4 = make([]ip4Range, 0)
+	loaded.arrV6 = make([]ip6Range, 0)
+
+	err = loaded.loadFile(filepath)
+
+	return
+}
+
+// GetCountry returns the country which ip belongs to
+func (ips loadedIPs) GetCountry(ip string) string {
+	if isIPv6(ip) {
+		ipNumb := big.NewInt(0)
+
+		err := Ip6ToInt(ip, ipNumb)
+		if err != nil {
+			return ""
+		}
+
+		index := bigBinarySearch(ips.arrV6, ipNumb, 0, len(ips.arrV6)-1)
+		if index == -1 {
+			return ""
+		}
+
+		return ips.arrV6[index].country
+	}
+
+	ipNumb, err := Ip4ToInt(ip)
 	if err != nil {
 		return ""
 	}
 
-	index := binarySearch(arr, ipNumb, 0, len(arr)-1)
+	index := binarySearch(ips.arrV4, ipNumb, 0, len(ips.arrV4)-1)
 	if index == -1 {
 		return ""
 	}
 
-	return arr[index].country
+	return ips.arrV4[index].country
 }
 
-//GetCountryMulti is a batch version of GetCountry function
-//It allows you to pass many ip addresses as input, and will return countries as output
-//the first index of slice is the answer for the first input , the second index for the second input and so on
-func GetCountryMulti(ips ...string) []string {
-	size := len(ips)
+// ips.GetCountryMulti is a batch version of GetCountry function
+// It allows you to pass many ip addresses as input, and will return countries as output
+// the first index of slice is the answer for the first input , the second index for the second input and so on
+func (ips loadedIPs) GetCountryMulti(addrs ...string) []string {
+	size := len(addrs)
 	answers := make([]string, size)
 	var wg sync.WaitGroup
 	wg.Add(size)
 
 	for i := 0; i < size; i++ {
 		go func(index int) {
-			answers[index] = GetCountry(ips[index])
+			answers[index] = ips.GetCountry(addrs[index])
 			wg.Done()
 		}(i)
 	}
@@ -75,12 +110,7 @@ func GetCountryMulti(ips ...string) []string {
 	return answers
 }
 
-func load(filepath string) error {
-	arr = make([]ipRange, 0)
-	return loadFile(filepath)
-}
-
-func loadFile(filepath string) error {
+func (ips *loadedIPs) loadFile(filepath string) error {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return err
@@ -89,7 +119,7 @@ func loadFile(filepath string) error {
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		err = addRaw(scanner.Text())
+		err = ips.addRaw(scanner.Text())
 		if err != nil {
 			return err
 		}
@@ -99,9 +129,22 @@ func loadFile(filepath string) error {
 	return err
 }
 
-//accept input string as follows
-//"{ip}","{ip}","{country}"
-func addRaw(line string) error {
+// function assumes that if the string has the ':' character it is ipv6 and not v4
+func isIPv6(ip string) bool {
+	return strings.Contains(ip, ":")
+}
+
+// accept input string as follows:
+//
+// "{ip}","{ip}","{country}"
+//
+// Supports both IPv4 and IPv6 addresses
+//
+// IPv6 addresses that have "::" (and not at the end)
+// (for example ffff::eeee) will not work (as of yet)
+//
+// This shouldn't be a problem with dbip csv files
+func (ips *loadedIPs) addRaw(line string) error {
 	//replace all double quotations
 	line = strings.Replace(line, "\"", "", -1)
 
@@ -110,28 +153,48 @@ func addRaw(line string) error {
 		return err
 	}
 
-	startIPnum, err := ipToInt(startIP)
+	// Checks if first ip is v4 or v6
+	if isIPv6(startIP) {
+		startIPnum := big.NewInt(0)
+		endIPnum := big.NewInt(0)
+
+		err := Ip6ToInt(startIP, startIPnum)
+		if err != nil {
+			return err
+		}
+
+		err = Ip6ToInt(endIP, endIPnum)
+		if err != nil {
+			return err
+		}
+
+		ips.arrV6 = append(ips.arrV6, ip6Range{startIPnum, endIPnum, country})
+		ensureV6Sorted(ips.arrV6)
+
+		return nil
+	}
+
+	startIPnum, err := Ip4ToInt(startIP)
 	if err != nil {
 		return err
 	}
 
-	endIPnum, err := ipToInt(endIP)
+	endIPnum, err := Ip4ToInt(endIP)
 	if err != nil {
 		return err
 	}
 
-	arr = append(arr, ipRange{startIPnum, endIPnum, country})
-	ensureSorted(arr)
+	ips.arrV4 = append(ips.arrV4, ip4Range{startIPnum, endIPnum, country})
+	ensureV4Sorted(ips.arrV4)
 
 	return nil
 }
 
-func ensureSorted(arr []ipRange) {
+func ensureV4Sorted(arr []ip4Range) {
 
 	i := len(arr) - 1
 	temp := arr[i]
 	for {
-
 		if i == 0 || arr[i].start >= arr[i-1].start {
 			break
 		}
@@ -142,7 +205,25 @@ func ensureSorted(arr []ipRange) {
 	arr[i] = temp
 }
 
-func ipToInt(ip string) (uint, error) {
+func ensureV6Sorted(arr []ip6Range) {
+	i := len(arr) - 1
+
+	temp := arr[i]
+
+	for {
+		if i == 0 || arr[i].start.Cmp(arr[i-1].start) >= 0 {
+			break
+		}
+
+		arr[i] = arr[i-1]
+		i--
+	}
+
+	arr[i] = temp
+}
+
+// Convert an ipv4 ip address to a uint32
+func Ip4ToInt(ip string) (uint, error) {
 
 	parts := strings.Split(ip, ".")
 	if len(parts) != 4 {
@@ -152,7 +233,6 @@ func ipToInt(ip string) (uint, error) {
 	var result uint
 	var index uint = 3
 	for i := 3; i >= 0; i-- {
-
 		ipNumb, err := strconv.Atoi(parts[index])
 		if err != nil {
 			return 0, err
@@ -165,6 +245,44 @@ func ipToInt(ip string) (uint, error) {
 	return result, nil
 }
 
+// Convert an ipv6 ip address to big.Int
+func Ip6ToInt(ip string, result *big.Int) error {
+	rawParts := strings.Split(ip, ":")
+
+	parts := []string{}
+
+	// remove empty strings
+	for _, part := range rawParts {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+
+	// if "filtered" list is 0 then it is equals to zero
+	// ipv6 address "::" should be 0
+	if len(parts) == 0 {
+		big.NewInt(0)
+		return nil
+	}
+
+	var index uint = 0
+
+	for i := 0; i < len(parts); i++ {
+		ipNumber, err := strconv.ParseInt(parts[i], 16, 64)
+		if err != nil {
+			return err
+		}
+
+		b := big.NewInt(ipNumber)
+		b.Lsh(b, (7-index)*16)
+		result.Or(result, b)
+
+		index++
+	}
+
+	return nil
+}
+
 func extract(line string) (string, string, string, error) {
 	parts := strings.Split(line, ",")
 	if len(parts) != 3 {
@@ -174,9 +292,8 @@ func extract(line string) (string, string, string, error) {
 	return parts[0], parts[1], parts[2], nil
 }
 
-func binarySearch(arr []ipRange, key uint, start, end int) int {
+func binarySearch(arr []ip4Range, key uint, start, end int) int {
 	for {
-
 		if start > end {
 			return -1 //not found
 		}
@@ -192,5 +309,26 @@ func binarySearch(arr []ipRange, key uint, start, end int) int {
 			start = mid + 1
 		}
 
+	}
+}
+
+func bigBinarySearch(arr []ip6Range, key *big.Int, start, end int) int {
+	for {
+		if start > end {
+			return -1
+		}
+
+		mid := (start + end) / 2
+		// key >= arr.start && key <= arr.end
+		if key.Cmp(arr[mid].start) >= 0 && key.Cmp(arr[mid].end) <= 0 {
+			return mid
+		}
+
+		// key < arr.start
+		if key.Cmp(arr[mid].start) < 0 {
+			end = mid - 1
+		} else if key.Cmp(arr[mid].end) > 0 { // key > arr.end
+			start = mid + 1
+		}
 	}
 }

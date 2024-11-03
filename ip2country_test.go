@@ -2,10 +2,11 @@ package ip2country_test
 
 import (
 	"fmt"
-	"ip2country"
 	"math/big"
 	"math/rand"
 	"testing"
+
+	"github.com/theshoutingparrot/ip2country"
 )
 
 func BenchmarkGetCountry(b *testing.B) {

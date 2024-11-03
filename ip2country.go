@@ -37,7 +37,7 @@ type ip6Range struct {
 	country string
 }
 
-type loadedIPs struct {
+type LoadedIPs struct {
 	arrV4 []ip4Range
 	arrV6 []ip6Range
 }
@@ -50,7 +50,7 @@ type loadedIPs struct {
 //	ips, _ := ip2country.Load("db.csv")
 //	fmt.Println(ips.GetCountry("1234::"))
 //	fmt.Println(ips.GetCountry("255.255.255.255"))
-func Load(filepath string) (loaded loadedIPs, err error) {
+func Load(filepath string) (loaded LoadedIPs, err error) {
 	loaded.arrV4 = make([]ip4Range, 0)
 	loaded.arrV6 = make([]ip6Range, 0)
 
@@ -60,7 +60,7 @@ func Load(filepath string) (loaded loadedIPs, err error) {
 }
 
 // GetCountry returns the country which ip belongs to
-func (ips loadedIPs) GetCountry(ip string) string {
+func (ips LoadedIPs) GetCountry(ip string) string {
 	if isIPv6(ip) {
 		ipNumb := big.NewInt(0)
 
@@ -93,7 +93,7 @@ func (ips loadedIPs) GetCountry(ip string) string {
 // ips.GetCountryMulti is a batch version of GetCountry function
 // It allows you to pass many ip addresses as input, and will return countries as output
 // the first index of slice is the answer for the first input , the second index for the second input and so on
-func (ips loadedIPs) GetCountryMulti(addrs ...string) []string {
+func (ips LoadedIPs) GetCountryMulti(addrs ...string) []string {
 	size := len(addrs)
 	answers := make([]string, size)
 	var wg sync.WaitGroup
@@ -110,7 +110,7 @@ func (ips loadedIPs) GetCountryMulti(addrs ...string) []string {
 	return answers
 }
 
-func (ips *loadedIPs) loadFile(filepath string) error {
+func (ips *LoadedIPs) loadFile(filepath string) error {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return err
@@ -138,13 +138,13 @@ func isIPv6(ip string) bool {
 //
 // "{ip}","{ip}","{country}"
 //
-// Supports both IPv4 and IPv6 addresses
+// # Supports both IPv4 and IPv6 addresses
 //
 // IPv6 addresses that have "::" (and not at the end)
 // (for example ffff::eeee) will not work (as of yet)
 //
 // This shouldn't be a problem with dbip csv files
-func (ips *loadedIPs) addRaw(line string) error {
+func (ips *LoadedIPs) addRaw(line string) error {
 	//replace all double quotations
 	line = strings.Replace(line, "\"", "", -1)
 
